@@ -1,0 +1,8 @@
+# ignore temporaries
+*~
+*.out
+*.log
+*.pyc
+__init__.py
+# ignore ROOT files
+*.root
