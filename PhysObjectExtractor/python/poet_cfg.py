@@ -87,14 +87,15 @@ process.myphotons = cms.EDAnalyzer('PhotonAnalyzer', photons=cms.InputTag("slimm
 #---- Example on how to add trigger information
 #---- To include it, uncomment the lines below and include the
 #---- module in the final path
-#process.mytriggers = cms.EDAnalyzer('TriggerAnalyzer',
-#                              processName = cms.string("HLT"),
+process.mytriggers = cms.EDAnalyzer('TriggerAnalyzer',
+                              processName = cms.string("HLT"),
 #                              #---- These are example of OR of triggers for 2015
 #                              #---- Wildcards * and ? are accepted (with usual meanings)
 #                              #---- If left empty, all triggers will run              
-#                              triggerPatterns = cms.vstring("HLT_IsoMu20_v*","HLT_IsoTkMu20_v*"), 
-#                              triggerResults = cms.InputTag("TriggerResults","","HLT")
-#                              )
+#                              triggerPatterns = cms.vstring("HLT_IsoMu20_v*","HLT_IsoTkMu20_v*"),
+                              triggerPatterns = cms.vstring("HLT_Ele22_eta2p1_WPLoose_Gsf_v*", "HLT_IsoMu20_v*","HLT_IsoTkMu20_v*"),
+                              triggerResults = cms.InputTag("TriggerResults","","HLT")
+                              )
 
 
 process.mypvertex = cms.EDAnalyzer('VertexAnalyzer',
@@ -203,7 +204,12 @@ process.mymets = cms.EDAnalyzer('MetAnalyzer',mets=cms.InputTag("slimmedMETsNewJ
 
 
 #----- RUN THE JOB! -----#
-process.TFileService = cms.Service("TFileService", fileName=cms.string("myoutput.root"))
+outFName = cms.string("myoutput.root")
+if isData:
+    outFName = cms.string("myoutput-data.root")
+else:
+    outFName = cms.string("myoutput-mc.root")
+process.TFileService = cms.Service("TFileService", fileName=outFName)
 
 if isData:
 	process.p = cms.Path(process.myelectrons+process.mymuons+process.mytaus+process.myphotons+process.mypvertex+
@@ -218,3 +224,4 @@ else:
                      process.uncorrectedMet+process.uncorrectedPatMet+process.Type1CorrForNewJEC+process.slimmedMETsNewJEC+process.mymets
                      )
 
+process.p+= process.mytriggers
