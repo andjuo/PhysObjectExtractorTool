@@ -62,9 +62,8 @@ class TriggerAnalyzer : public edm::stream::EDAnalyzer< >  {
                         const edm::EventSetup& iSetup,
                         const edm::TriggerNames & triggerNames);
       //static void fillDescriptions(edm::ConfigurationDescriptions& descriptions);
-      //virtual void beginJob();
+      //virtual void beginJob();  // ignored anyway
       //virtual void endJob();
-
 
    private:
       // ----------member data ---------------------------
@@ -92,6 +91,14 @@ class TriggerAnalyzer : public edm::stream::EDAnalyzer< >  {
 
      TTree *mtree;
      std::map<std::string, int> trigmap;
+
+     // monitor each trigger firing
+     TTree *hltFiredTree;
+     std::map<std::string,std::vector<std::string>> hltTrackedNamesMap; // pattern -> trigger map
+     std::vector<std::string> hltTrackedNames; // patterns without wildcards
+     std::vector<int> hltFiredVec;  // whether pattern fired or not
+     std::vector<TH1F*> histoHltFiredVec; // pattern firing distribution (not valid, not run, not fired, fired)
+     std::vector<std::vector<std::string> > hltL1MultiSeedVec; // whether HLT is seeded from several L1 paths
 };
 
 //
@@ -131,13 +138,18 @@ triggerResultsToken_(consumes<edm::TriggerResults>(triggerResultsTag_)),
 triggerNamesID_(),
 hltPrescaleProvider_(ps, consumesCollector(), *this),
 HLTPatterns_(ps.getParameter<std::vector<std::string> >("triggerPatterns")),
-HLTPathsByName_()
+HLTPathsByName_(),
+hltTrackedNamesMap(),
+hltTrackedNames(),
+hltFiredVec(),
+histoHltFiredVec(),
+hltL1MultiSeedVec()
 {
    //now do what ever initialization is needed
    using namespace std;
    using namespace edm;
 
-   //for storing HLTPatt
+   //for storing HLTPattern
    edm::Service<TFileService> fs;
    mtree = fs->make<TTree>("Events", "Events");
    mtree->Branch("triggermap", &trigmap);
@@ -145,6 +157,30 @@ HLTPathsByName_()
    //so, if negative, it means that L1ps couldn't be found.
    //look below in the code to understand the specifics
    mtree->GetBranch("triggermap")->SetTitle("first:name of trigger, second: acceptbit*L1ps*HLTps");
+
+   // prepare splitting by the HLT patterns
+   hltFiredTree = fs->make<TTree>("hltFiredTree","HLT Trigger info per event");
+   if (HLTPatterns_.size()==0) hltFiredVec.push_back(0); // not-stored variable
+   else hltFiredVec = std::vector<int>(HLTPatterns_.size(),0); // pre-allocate
+   // stored structure, if a pattern list was provided
+   for (unsigned int i=0; i<HLTPatterns_.size(); i++) {
+     TString patt (HLTPatterns_[i]);
+     patt.Remove(TString::kBoth, '*');
+     hltTrackedNames.push_back(std::string(patt));
+     hltL1MultiSeedVec.push_back(std::vector<std::string>());
+
+     // register variable
+     hltFiredTree->Branch(patt,&hltFiredVec[i],Form("%s/I",patt.Data()));
+     hltFiredTree->GetBranch(patt) -> SetTitle(Form("%s acc*prescHLT*prescL1",patt.Data()));
+
+     // create histo
+     TH1F *h1= new TH1F("h1F_" + patt, patt + ";trigger state;sum(acc*prescHLT*prescL1)", 3, -1.5, 1.5);
+     h1->GetXaxis()->SetBinLabel(1,"other");
+     h1->GetXaxis()->SetBinLabel(2,"not fired");
+     h1->GetXaxis()->SetBinLabel(3,"fired");
+     histoHltFiredVec.push_back(h1);
+   }
+
 }
 
 
@@ -153,6 +189,51 @@ TriggerAnalyzer::~TriggerAnalyzer()
 
    // do anything here that needs to be done at desctruction time
    // (e.g. close files, deallocate resources etc.)
+
+  std::cout << "destructor !!" << std::endl;
+
+  std::cout << "trigger pattern matching\n";
+  if (!hltTrackedNames.size()) {
+    std::cout << " - no patterns were given" << std::endl;
+  }
+  else {
+    for (auto it= hltTrackedNamesMap.begin(); it!=hltTrackedNamesMap.end(); it++) {
+      std::cout << " - pattern " << it->first << ": ";
+      const std::vector<std::string> &v = it->second;
+      for (unsigned int i=0; i<v.size(); i++) {
+	std::cout << " <" << v[i] << ">";
+      }
+      std::cout << std::endl;
+    }
+
+    std::cout << "MultiSeeded patterns:\n";
+    int present=0;
+    for (unsigned int ii=0; ii<hltL1MultiSeedVec.size(); ii++) {
+      if (hltL1MultiSeedVec[ii].size()) {
+	present=1;
+	std::cout << " - pattern " << hltTrackedNames[ii] << " contained multiple seeds: ";
+	const std::vector<std::string> &vec = hltL1MultiSeedVec[ii];
+	for (unsigned int iseed=0; iseed<vec.size(); iseed++) {
+	  std::cout << " " << vec[iseed];
+	}
+	std::cout << std::endl;
+      }
+    }
+    if (!present) std::cout << " ... were not present" << std::endl;
+    else std::cout << " ... only first multi-seeding was printed" << std::endl;
+  }
+
+  // Save histograms if needed
+  if (histoHltFiredVec.size()) {
+    const TString histoDir="hltTriggerAnalyzerHistos";
+    edm::Service<TFileService> fs;
+    fs->file().mkdir(histoDir);
+    fs->file().cd(histoDir);
+    for (unsigned int i=0; i<histoHltFiredVec.size(); i++) {
+      histoHltFiredVec[i]->Write();
+    }
+    std::cout << "wrote summary histos to " << histoDir << " of output ROOT file (" << fs->file().GetName() << ")" << std::endl;
+  }
 
 }
 
@@ -223,6 +304,7 @@ TriggerAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup
 
    //clear trigmap
    trigmap.clear();
+   std::fill(hltFiredVec.begin(),hltFiredVec.end(),0);
 
    //Loop over all triggers in the pattern
    for (unsigned int i=0; i!=n; ++i) {
@@ -238,6 +320,7 @@ TriggerAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup
 
 
   mtree->Fill();
+  hltFiredTree->Fill();
   return;
 
 
@@ -273,6 +356,20 @@ void TriggerAnalyzer::analyzeSimplePrescales(const edm::Event& iEvent, const edm
     throw exception();
   }
 
+  // determine the index of HLT pattern
+  int idxHLTpatt = -1;
+  if (!HLTPatterns_.empty()) {
+    for (unsigned int ipatt=0; (ipatt<hltTrackedNames.size()) && (idxHLTpatt<0); ipatt++) {
+      if (triggerName.find(hltTrackedNames[ipatt])!=std::string::npos) {
+	idxHLTpatt = static_cast<int>(ipatt);
+      }
+    }
+    if (idxHLTpatt==-1) {
+      std::cout << "HLTPattern WARNING: failed to identify triggerName=" << triggerName << std::endl;
+    }
+  }
+
+
 
   //  L1 and HLT prescale values via (L1) EventSetup
   // Current (default) prescale set index - to be taken from L1GtUtil via Event.
@@ -284,9 +381,49 @@ void TriggerAnalyzer::analyzeSimplePrescales(const edm::Event& iEvent, const edm
   // and for that the "Frontier Conditions" lines need to
   // be added in the python configuration file along with the
   // name for the global tag.
-  const std::pair<int,int> prescales(hltPrescaleProvider_.prescaleValues(iEvent,iSetup,triggerName));
-  L1_ps = prescales.first;
-  HLT_ps = prescales.second;
+  HLT_ps=-1; L1_ps=-1;
+  //const std::pair<int,int> prescales(hltPrescaleProvider_.prescaleValues(iEvent,iSetup,triggerName));
+  //L1_ps = prescales.first;
+  //HLT_ps = prescales.second;
+
+  // complicated prescale for some triggers
+  if (L1_ps<0) {
+    std::pair<std::vector<std::pair<std::string,int> >,int> complicatedPrescales(hltPrescaleProvider_.prescaleValuesInDetail(iEvent,iSetup,triggerName));
+    std::vector<std::pair<std::string,int> > compL1_ps = complicatedPrescales.first;
+    int compHLT_ps = complicatedPrescales.second;
+    if (compL1_ps.size()>1) {
+      // record the seeds, if needed
+      if ((idxHLTpatt>-1) && (hltL1MultiSeedVec[idxHLTpatt].size()==0)) {
+	for (unsigned int ii=0; ii<compL1_ps.size(); ii++) {
+	  //std::cout << " " << compL1_ps[ii].first << " : " << compL1_ps[ii].second << " ";
+	  hltL1MultiSeedVec[idxHLTpatt].push_back(compL1_ps[ii].first);
+	}
+	// adjust the title of the histogram
+	TH1F *h1= histoHltFiredVec[idxHLTpatt];
+	h1->GetYaxis()->SetTitle("sum(acc*prescHLT*min(prescL1))");
+	h1->GetYaxis()->SetTitleColor(kBlue);
+      }
+
+      if (1) { // print if needed
+	std::cout << "Run=" << iEvent.run() << ", evtNo=" << iEvent.id().event() << "\n";
+	std::cout << "triggerName=" << triggerName << " "; //L1_ps=" << L1_ps << " HLT_ps=" << HLT_ps << "\n";
+	std::cout << "complication HLT_ps=" << compHLT_ps << "\n";
+	std::cout << "complication L1_ps[" << compL1_ps.size() << "]= {";
+	for (unsigned int ii=0; ii<compL1_ps.size(); ii++) {
+	  std::cout << " " << compL1_ps[ii].first << " : " << compL1_ps[ii].second << " ";
+	}
+	std::cout << "}" << std::endl;
+      }
+    }
+
+    // decide on prescale
+    HLT_ps= compHLT_ps;
+    L1_ps= compL1_ps[0].second;
+    for (unsigned int ii=0; ii<compL1_ps.size(); ii++) {
+      if (L1_ps > compL1_ps[ii].second) L1_ps= compL1_ps[ii].second;
+    }
+  }
+
 
   // Find out if the trigger was active, accepted, or in error.
   // We could also find out whether the trigger was active (wasrun),
@@ -307,6 +444,24 @@ void TriggerAnalyzer::analyzeSimplePrescales(const edm::Event& iEvent, const edm
   //if accepted the prescale will be different from zero but positive
   //if accepted but L1 prescale can't be read, it will be negative
   trigmap.insert(pair<string,int>(triggerName,acc_bit*L1_ps*HLT_ps));
+
+  // record pattern
+  if (idxHLTpatt!=-1) {
+    const std::string& patt= hltTrackedNames[idxHLTpatt];
+    // register trigger name for this pattern
+    std::vector<string>& expansion= hltTrackedNamesMap[patt];
+    if (!expansion.size() ||
+	(std::find(expansion.begin(),expansion.end(),triggerName) == expansion.end())) {
+      expansion.push_back(triggerName);
+    }
+    std::cout << "triggerName=" << triggerName << ", wr=" << wr << " err=" << err << " acc=" << acc << std::endl;
+    int trigState= -1;
+    if ((wr == 1) && (err == 0)) {
+      hltFiredVec[idxHLTpatt] += acc*L1_ps*HLT_ps;
+      trigState=acc;
+    }
+    histoHltFiredVec[idxHLTpatt]->Fill(trigState, L1_ps*HLT_ps);
+  }
 
   return;
 }
